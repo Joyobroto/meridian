@@ -106,9 +106,15 @@ export async function getWalletBalances() {
 const SOL_MINT = "So11111111111111111111111111111111111111112";
 
 // Normalize any SOL-like address to the correct wrapped SOL mint
-function normalizeMint(mint) {
+export function normalizeMint(mint) {
   if (!mint) return mint;
-  if (mint === "SOL" || mint === "native" || /^So1+$/.test(mint) || /^So1+[^2]$/.test(mint)) {
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  if (
+    mint === "SOL" || 
+    mint === "native" || 
+    /^So1+$/.test(mint) || 
+    (mint.length >= 32 && mint.length <= 44 && mint.startsWith("So1") && mint !== SOL_MINT)
+  ) {
     return SOL_MINT;
   }
   return mint;

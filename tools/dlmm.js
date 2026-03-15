@@ -19,6 +19,7 @@ import {
   syncOpenPositions,
 } from "../state.js";
 import { recordPerformance } from "../lessons.js";
+import { normalizeMint } from "./wallet.js";
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
 // @meteora-ag/dlmm → @coral-xyz/anchor uses CJS directory imports
@@ -77,6 +78,7 @@ setInterval(() => poolCache.clear(), 5 * 60 * 1000);
 
 // ─── Get Active Bin ────────────────────────────────────────────
 export async function getActiveBin({ pool_address }) {
+  pool_address = normalizeMint(pool_address);
   const pool = await getPool(pool_address);
   const activeBin = await pool.getActiveBin();
 
@@ -104,6 +106,7 @@ export async function deployPosition({
   organic_score,
   initial_value_usd,
 }) {
+  pool_address = normalizeMint(pool_address);
   const activeStrategy = strategy || config.strategy.strategy;
   
   if (activeStrategy !== "bid_ask") {
@@ -255,6 +258,8 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
 
 // ─── Get Position PnL (Meteora API) ─────────────────────────────
 export async function getPositionPnl({ pool_address, position_address }) {
+  pool_address = normalizeMint(pool_address);
+  position_address = normalizeMint(position_address);
   const walletAddress = getWallet().publicKey.toString();
   try {
     const byAddress = await fetchDlmmPnlForPool(pool_address, walletAddress);
@@ -443,6 +448,7 @@ export async function getWalletPositions({ wallet_address }) {
 
 // ─── Claim Fees ────────────────────────────────────────────────
 export async function claimFees({ position_address }) {
+  position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_claim: position_address, message: "DRY RUN — no transaction sent" };
   }
@@ -472,6 +478,7 @@ export async function claimFees({ position_address }) {
 
 // ─── Close Position ────────────────────────────────────────────
 export async function closePosition({ position_address }) {
+  position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
     return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
   }
