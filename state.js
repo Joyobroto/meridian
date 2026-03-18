@@ -246,6 +246,25 @@ export function getStateSummary() {
   };
 }
 
+// ─── Briefing Tracking ─────────────────────────────────────────
+
+/**
+ * Get the date (YYYY-MM-DD UTC) when the last briefing was sent.
+ */
+export function getLastBriefingDate() {
+  const state = load();
+  return state._lastBriefingDate || null;
+}
+
+/**
+ * Record that the briefing was sent today.
+ */
+export function setLastBriefingDate() {
+  const state = load();
+  state._lastBriefingDate = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+  save(state);
+}
+
 /**
  * Reconcile local state with actual on-chain positions.
  * Marks any local open positions as closed if they are not in the on-chain list.

@@ -12,6 +12,8 @@ user-config.json
 state.json
 lessons.json
 smart-wallets.json
+pool-memory.json
+token-blacklist.json
 
 # Logs
 logs/

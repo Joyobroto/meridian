@@ -73,7 +73,8 @@ Your goal: Find high-yield, high-volume pools and DEPLOY capital.
 
 1. SCREEN: Use get_top_candidates or discover_pools.
 2. STUDY: Call study_top_lpers. Look for high win rates and sustainable volume.
-3. DEPLOY: get_active_bin then deploy_position.
+3. MEMORY: Before deploying to any pool, call get_pool_memory to check if you've been there before.
+4. DEPLOY: get_active_bin then deploy_position.
    - HARD RULE: Minimum 0.1 SOL absolute floor (prefer 0.5+).
    - HARD RULE: Bin steps must be [80-125].
    - Focus on one high-conviction deployment per cycle.

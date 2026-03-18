@@ -11,6 +11,7 @@ import { evolveThresholds, getPerformanceSummary } from "./lessons.js";
 import { registerCronRestarter } from "./tools/executor.js";
 import { startPolling, stopPolling, sendMessage, sendHTML, notifyOutOfRange, isEnabled as telegramEnabled } from "./telegram.js";
 import { generateBriefing } from "./briefing.js";
+import { getLastBriefingDate, setLastBriefingDate } from "./state.js";
 
 log("startup", "DLMM LP Agent starting...");
 log("startup", `Mode: ${process.env.DRY_RUN === "true" ? "DRY RUN" : "LIVE"}`);
@@ -52,6 +53,38 @@ function buildPrompt() {
 let _cronTasks = [];
 let _managementBusy = false; // prevents overlapping management cycles
 let _screeningBusy = false;  // prevents overlapping screening cycles
+
+async function runBriefing() {
+  log("cron", "Starting morning briefing");
+  try {
+    const briefing = await generateBriefing();
+    if (telegramEnabled()) {
+      await sendHTML(briefing);
+    }
+    setLastBriefingDate();
+  } catch (error) {
+    log("cron_error", `Morning briefing failed: ${error.message}`);
+  }
+}
+
+/**
+ * If the agent restarted after the 1:00 AM UTC cron window,
+ * fire the briefing immediately on startup so it's never skipped.
+ */
+async function maybeRunMissedBriefing() {
+  const todayUtc = new Date().toISOString().slice(0, 10);
+  const lastSent = getLastBriefingDate();
+
+  if (lastSent === todayUtc) return; // already sent today
+
+  // Only fire if it's past the scheduled time (1:00 AM UTC)
+  const nowUtc = new Date();
+  const briefingHourUtc = 1;
+  if (nowUtc.getUTCHours() < briefingHourUtc) return; // too early, cron will handle it
+
+  log("cron", `Missed briefing detected (last sent: ${lastSent || "never"}) — sending now`);
+  await runBriefing();
+}
 
 function stopCronJobs() {
   for (const task of _cronTasks) task.stop();
@@ -172,18 +205,15 @@ Summarize the current portfolio health, total fees earned, and performance of al
 
   // Morning Briefing at 8:00 AM UTC+7 (1:00 AM UTC)
   const briefingTask = cron.schedule(`0 1 * * *`, async () => {
-    log("cron", "Starting morning briefing");
-    try {
-      const briefing = await generateBriefing();
-      if (telegramEnabled()) {
-        await sendHTML(briefing);
-      }
-    } catch (error) {
-      log("cron_error", `Morning briefing failed: ${error.message}`);
-    }
+    await runBriefing();
   }, { timezone: 'UTC' });
 
-  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask];
+  // Every 6h — catch up if briefing was missed (agent restart, crash, etc.)
+  const briefingWatchdog = cron.schedule(`0 */6 * * *`, async () => {
+    await maybeRunMissedBriefing();
+  }, { timezone: 'UTC' });
+
+  _cronTasks = [mgmtTask, screenTask, healthTask, briefingTask, briefingWatchdog];
   log("cron", `Cycles started — management every ${config.schedule.managementIntervalMin}m, screening every ${config.schedule.screeningIntervalMin}m`);
 }
 
@@ -324,6 +354,7 @@ if (isTTY) {
 
   // Always start autonomous cycles on launch
   launchCron();
+  maybeRunMissedBriefing().catch(() => {});
 
   // Telegram bot
   startPolling(async (text) => {
@@ -564,6 +595,7 @@ Focus on: hold duration, entry/exit timing, what win rates look like, whether sc
   // Non-TTY: start immediately
   log("startup", "Non-TTY mode — starting cron cycles immediately.");
   startCronJobs();
+  maybeRunMissedBriefing().catch(() => {});
   (async () => {
     try {
       await agentLoop(`

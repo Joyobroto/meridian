@@ -672,5 +672,140 @@ Examples:
         required: ["rule"]
       }
     }
+  },
+
+  // ─── Performance History ────────────────────────────────────────
+
+  {
+    type: "function",
+    function: {
+      name: "get_performance_history",
+      description: `Retrieve closed position records filtered by time window.
+Use when the user asks about recent performance, last 24h positions, how you've been doing, P&L history, etc.
+Returns individual closed positions with PnL, fees, strategy, hold time, and close reason.`,
+      parameters: {
+        type: "object",
+        properties: {
+          hours: {
+            type: "number",
+            description: "How many hours back to look (default 24). Use 168 for last 7 days."
+          },
+          limit: {
+            type: "number",
+            description: "Max records to return (default 50)"
+          }
+        }
+      }
+    }
+  },
+
+  // ─── Pool Memory ────────────────────────────────────────────────
+
+  {
+    type: "function",
+    function: {
+      name: "get_pool_memory",
+      description: `Check your deploy history for a pool BEFORE deploying.
+Returns all past deploys, PnL, win rate, and any notes you've added.
+
+Call this tool before deploying to any pool — you may have been here before and it didn't work.
+Also useful during screening to skip pools with a bad track record.`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: {
+            type: "string",
+            description: "The pool address to look up"
+          }
+        },
+        required: ["pool_address"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "add_pool_note",
+      description: `Annotate a pool with a freeform note that persists across sessions.
+Use when you observe something worth remembering about a specific pool:
+- "volume dried up after 2h — avoid during off-hours"
+- "consistently good during Asian session"
+- "rugged base token — monitor closely"`,
+      parameters: {
+        type: "object",
+        properties: {
+          pool_address: {
+            type: "string",
+            description: "Pool address to annotate"
+          },
+          note: {
+            type: "string",
+            description: "The note to save"
+          }
+        },
+        required: ["pool_address", "note"]
+      }
+    }
+  },
+
+  // ─── Token Blacklist ────────────────────────────────────────────
+
+  {
+    type: "function",
+    function: {
+      name: "add_to_blacklist",
+      description: `Permanently blacklist a base token mint so it's never deployed into again.
+Use when a token rugs, shows wash trading, or is otherwise unsafe.
+Blacklisted tokens are filtered BEFORE the LLM even sees pool candidates.`,
+      parameters: {
+        type: "object",
+        properties: {
+          mint: {
+            type: "string",
+            description: "The base token mint address to blacklist"
+          },
+          symbol: {
+            type: "string",
+            description: "Token symbol (for readability)"
+          },
+          reason: {
+            type: "string",
+            description: "Why this token is being blacklisted"
+          }
+        },
+        required: ["mint", "reason"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "remove_from_blacklist",
+      description: "Remove a token mint from the blacklist (e.g. if it was added by mistake).",
+      parameters: {
+        type: "object",
+        properties: {
+          mint: {
+            type: "string",
+            description: "The mint address to remove from the blacklist"
+          }
+        },
+        required: ["mint"]
+      }
+    }
+  },
+
+  {
+    type: "function",
+    function: {
+      name: "list_blacklist",
+      description: "List all blacklisted token mints with their reasons and timestamps.",
+      parameters: {
+        type: "object",
+        properties: {}
+      }
+    }
   }
 ];

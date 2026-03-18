@@ -11,8 +11,10 @@ import {
 } from "./dlmm.js";
 import { getWalletBalances, swapToken } from "./wallet.js";
 import { studyTopLPers } from "./study.js";
-import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword } from "../lessons.js";
+import { addLesson, clearAllLessons, clearPerformance, removeLessonsByKeyword, getPerformanceHistory } from "../lessons.js";
 import { setPositionInstruction } from "../state.js";
+import { getPoolMemory, addPoolNote } from "../pool-memory.js";
+import { addToBlacklist, removeFromBlacklist, listBlacklist } from "../token-blacklist.js";
 import { addSmartWallet, removeSmartWallet, listSmartWallets, checkSmartWalletsOnPool } from "../smart-wallets.js";
 import { getTokenInfo, getTokenHolders } from "./token.js";
 import { config, reloadScreeningThresholds } from "../config.js";
@@ -79,6 +81,12 @@ const toolMap = {
       return { success: false, error: e.message };
     }
   },
+  get_performance_history: getPerformanceHistory,
+  get_pool_memory: getPoolMemory,
+  add_pool_note: addPoolNote,
+  add_to_blacklist: addToBlacklist,
+  remove_from_blacklist: removeFromBlacklist,
+  list_blacklist: listBlacklist,
   add_lesson: ({ rule, tags }) => { addLesson(rule, tags || []); return { saved: true, rule }; },
   clear_lessons: ({ mode, keyword }) => {
     if (mode === "all") {

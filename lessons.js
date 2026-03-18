@@ -87,6 +87,24 @@ export async function recordPerformance(perf) {
 
   save(data);
 
+  // Update pool-level memory
+  if (perf.pool) {
+    const { recordPoolDeploy } = await import("./pool-memory.js");
+    recordPoolDeploy(perf.pool, {
+      pool_name: perf.pool_name,
+      base_mint: perf.base_mint,
+      deployed_at: perf.deployed_at,
+      closed_at: entry.recorded_at,
+      pnl_pct: entry.pnl_pct,
+      pnl_usd: entry.pnl_usd,
+      range_efficiency: entry.range_efficiency,
+      minutes_held: perf.minutes_held,
+      close_reason: perf.close_reason,
+      strategy: perf.strategy,
+      volatility: perf.volatility,
+    });
+  }
+
   // Evolve thresholds every 5 closed positions
   if (data.performance.length % MIN_EVOLVE_POSITIONS === 0) {
     const { config, reloadScreeningThresholds } = await import("./config.js");
@@ -414,25 +432,94 @@ export function clearPerformance() {
 
 /**
  * Get lessons formatted for injection into the system prompt.
- * Returns the N most recent/relevant lessons.
+ *
+ * @param {Object} opts
+ * @param {string[]} [opts.tags]       - Tag strings to prioritize (e.g. ["spot", "volatility_2"])
+ * @param {number}   [opts.maxLessons] - Total cap (default 20)
  */
-export function getLessonsForPrompt(maxLessons = 20) {
+export function getLessonsForPrompt(opts = {}) {
+  // Support legacy call signature: getLessonsForPrompt(20)
+  if (typeof opts === "number") opts = { maxLessons: opts };
+
+  const { tags = [], maxLessons = 20 } = opts;
+
   const data = load();
 
   if (data.lessons.length === 0) return null;
 
   // Sort: bad/failed lessons first (most important to avoid), then good ones
-  const sorted = [...data.lessons].sort((a, b) => {
-    const priority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3 };
-    return (priority[a.outcome] ?? 3) - (priority[b.outcome] ?? 3);
-  });
+  const priority = { bad: 0, poor: 1, failed: 1, good: 2, worked: 2, manual: 1, neutral: 3, evolution: 2 };
+  const sorted = [...data.lessons].sort((a, b) =>
+    (priority[a.outcome] ?? 3) - (priority[b.outcome] ?? 3)
+  );
 
-  const recent = sorted.slice(0, maxLessons);
+  let selected;
 
-  return recent.map((l) => {
+  if (tags.length > 0) {
+    // Fill first half of budget with tag-matched lessons, rest with recent ones
+    const tagBudget = Math.floor(maxLessons / 2);
+    const restBudget = maxLessons - tagBudget;
+
+    const matched = sorted.filter((l) =>
+      l.tags && l.tags.some((t) => tags.includes(t))
+    ).slice(0, tagBudget);
+
+    const matchedIds = new Set(matched.map((l) => l.id));
+    const rest = sorted.filter((l) => !matchedIds.has(l.id)).slice(0, restBudget);
+
+    selected = [...matched, ...rest];
+  } else {
+    selected = sorted.slice(0, maxLessons);
+  }
+
+  return selected.map((l) => {
     const date = l.created_at ? l.created_at.slice(0, 16).replace("T", " ") : "unknown";
     return `[${l.outcome.toUpperCase()}] [${date}] ${l.rule}`;
   }).join("\n");
+}
+
+/**
+ * Get individual performance records filtered by time window.
+ * Tool handler: get_performance_history
+ *
+ * @param {Object} opts
+ * @param {number} [opts.hours=24]   - How many hours back to look
+ * @param {number} [opts.limit=50]   - Max records to return
+ */
+export function getPerformanceHistory({ hours = 24, limit = 50 } = {}) {
+  const data = load();
+  const p = data.performance;
+
+  if (p.length === 0) return { positions: [], count: 0, hours };
+
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
+  const filtered = p
+    .filter((r) => r.recorded_at >= cutoff)
+    .slice(-limit)
+    .map((r) => ({
+      pool_name: r.pool_name,
+      pool: r.pool,
+      strategy: r.strategy,
+      pnl_usd: r.pnl_usd,
+      pnl_pct: r.pnl_pct,
+      fees_earned_usd: r.fees_earned_usd,
+      range_efficiency: r.range_efficiency,
+      minutes_held: r.minutes_held,
+      close_reason: r.close_reason,
+      closed_at: r.recorded_at,
+    }));
+
+  const totalPnl = filtered.reduce((s, r) => s + (r.pnl_usd ?? 0), 0);
+  const wins = filtered.filter((r) => r.pnl_usd > 0).length;
+
+  return {
+    hours,
+    count: filtered.length,
+    total_pnl_usd: Math.round(totalPnl * 100) / 100,
+    win_rate_pct: filtered.length > 0 ? Math.round((wins / filtered.length) * 100) : null,
+    positions: filtered,
+  };
 }
 
 /**
