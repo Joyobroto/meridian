@@ -22,6 +22,17 @@ let _liveMessageDepth = 0;
 let _warnedMissingChatId = false;
 let _warnedMissingAllowedUsers = false;
 
+// --- FIX: Escape HTML special chars so Telegram parse_mode HTML never chokes ---
+function escapeHtml(text) {
+  if (text == null) return "";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+// --- END FIX ---
+
 // ─── chatId persistence ──────────────────────────────────────────
 function loadChatId() {
   try {
@@ -111,11 +122,12 @@ export async function sendHTML(html) {
   return postTelegram("sendMessage", { text: html.slice(0, 4096), parse_mode: "HTML" });
 }
 
-export async function editMessage(text, messageId) {
+export async function editMessage(text, messageId, parseMode = "HTML") {
   if (!TOKEN || !chatId || !messageId) return null;
   return postTelegram("editMessageText", {
     message_id: messageId,
     text: String(text).slice(0, 4096),
+    parse_mode: parseMode,
   });
 }
 
@@ -229,11 +241,11 @@ export async function createLiveMessage(title, intro = "Starting...") {
     state.flushRequested = false;
     const text = render();
     if (!state.messageId) {
-      const sent = await sendMessage(text);
+      const sent = await sendHTML(text);
       state.messageId = sent?.result?.message_id ?? null;
       return;
     }
-    await editMessage(text, state.messageId);
+    await editMessage(text, state.messageId, "HTML");
   }
 
   function scheduleFlush(delay = 300) {
@@ -335,35 +347,64 @@ export function stopPolling() {
 }
 
 // ─── Notification helpers ────────────────────────────────────────
-export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee }) {
+export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee, strategy }) {
   if (hasActiveLiveMessage()) return;
-  const priceStr = priceRange
-    ? `Price range: ${priceRange.min < 0.0001 ? priceRange.min.toExponential(3) : priceRange.min.toFixed(6)} – ${priceRange.max < 0.0001 ? priceRange.max.toExponential(3) : priceRange.max.toFixed(6)}\n`
+
+  const priceStr   = priceRange
+    ? `📊 <b>Range:</b> ${priceRange.min < 0.0001 ? priceRange.min.toExponential(3) : priceRange.min.toFixed(6)} → ${priceRange.max < 0.0001 ? priceRange.max.toExponential(3) : priceRange.max.toFixed(6)}\n`
     : "";
   const coverageStr = rangeCoverage
-    ? `Range cover: ${fmtPct(rangeCoverage.downside_pct)} downside | ${fmtPct(rangeCoverage.upside_pct)} upside | ${fmtPct(rangeCoverage.width_pct)} total\n`
+    ? `🎯 <b>Coverage:</b> ${fmtPct(rangeCoverage.downside_pct)} ↓,  ${fmtPct(rangeCoverage.upside_pct)} ↑,  ${fmtPct(rangeCoverage.width_pct)} total\n`
     : "";
-  const poolStr = (binStep || baseFee)
-    ? `Bin step: ${binStep ?? "?"}  |  Base fee: ${baseFee != null ? baseFee + "%" : "?"}\n`
-    : "";
+  const stratStr   = strategy  ? `📐 <b>Strategy:</b> ${strategy}\n`                                            : "";
+  const binStr     = binStep   ? `⚙️ <b>Bin step:</b> ${binStep}\n`                                            : "";
+  const feeStr     = baseFee   ? `💸 <b>Base fee:</b> ${baseFee}%\n`                                           : "";
+
+
   await sendHTML(
-    `✅ <b>Deployed</b> ${pair}\n` +
-    `Amount: ${amountSol} SOL\n` +
+    `🚀 <b>Position Opened</b> — ${escapeHtml(pair)}\n` +
+    `\n` +
+    `🏦 <b>Deployed:</b> ${amountSol} SOL\n` +
+    stratStr +
     priceStr +
     coverageStr +
-    poolStr +
-    `Position: <code>${position?.slice(0, 8)}...</code>\n` +
-    `Tx: <code>${tx?.slice(0, 16)}...</code>`
+    binStr +
+    feeStr +
+    `🔑 <b>Position:</b> <code>${position?.slice(0, 8)}...</code>\n` +
+    `🔗 <b>Tx:</b> <code>${tx?.slice(0, 16)}...</code>`
   );
 }
 
-export async function notifyClose({ pair, pnlUsd, pnlPct }) {
+export async function notifyClose({ pair, pnlUsd, pnlPct, feesEarnedUsd, minutesHeld, strategy, amountSol, closeReason }) {
   if (hasActiveLiveMessage()) return;
-  const sign = pnlUsd >= 0 ? "+" : "";
-  await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
-  );
+
+  const isWin = pnlUsd >= 0;
+  const emoji = isWin ? "🟢" : "🔴";
+  const sign  = isWin ? "+" : "";
+
+  // Hold time: "1h 23m" or "45m" — never show "?"
+  let holdTime = null;
+  if (minutesHeld != null) {
+    const h = Math.floor(minutesHeld / 60);
+    const m = minutesHeld % 60;
+    holdTime = h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  // Reason: trim punctuation
+  const reason = closeReason ? escapeHtml(String(closeReason).replace(/\.+$/, "").trim()) : null; // --- FIX: escape HTML to prevent Telegram 400 errors ---
+
+  const lines = [
+    `${emoji} <b>Position Closed</b> — ${escapeHtml(pair)}`,
+    ``,
+    `💵 <b>PnL: ${sign}$${Number(pnlUsd ?? 0).toFixed(2)} USD (${sign}${Number(pnlPct ?? 0).toFixed(2)}%)</b>`,
+    feesEarnedUsd != null          ? `💰 <b>Fees earned:</b> $${Number(feesEarnedUsd).toFixed(2)}` : null,
+    amountSol     != null          ? `🏦 <b>Deployed:</b> ${Number(amountSol).toFixed(2)} SOL`     : null,
+    strategy      != null          ? `📐 <b>Strategy:</b> ${strategy}`                             : null,
+    holdTime      != null          ? `⏱ <b>Hold time:</b> ${holdTime}`                             : null,
+    reason        != null          ? `📋 <b>Reason:</b> ${reason}`                                 : null,
+  ].filter(l => l !== null);
+
+  await sendHTML(lines.join("\n"));
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {

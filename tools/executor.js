@@ -326,26 +326,75 @@ export async function executeTool(name, args) {
       if (name === "swap_token" && result.tx) {
         notifySwap({ inputSymbol: args.input_mint?.slice(0, 8), outputSymbol: args.output_mint === "So11111111111111111111111111111111111111112" || args.output_mint === "SOL" ? "SOL" : args.output_mint?.slice(0, 8), amountIn: result.amount_in, amountOut: result.amount_out, tx: result.tx }).catch(() => {});
       } else if (name === "deploy_position") {
-        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee }).catch(() => {});
+        notifyDeploy({ pair: result.pool_name || args.pool_name || args.pool_address?.slice(0, 8), amountSol: args.amount_y ?? args.amount_sol ?? 0, position: result.position, tx: result.txs?.[0] ?? result.tx, priceRange: result.price_range, rangeCoverage: result.range_coverage, binStep: result.bin_step, baseFee: result.base_fee, strategy: result.strategy ?? args.strategy ?? null }).catch(() => {});
       } else if (name === "close_position") {
-        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0 }).catch(() => {});
+        notifyClose({ pair: result.pool_name || args.position_address?.slice(0, 8), pnlUsd: result.pnl_usd ?? 0, pnlPct: result.pnl_pct ?? 0, feesEarnedUsd: result.fees_earned_usd ?? 0, minutesHeld: result.minutes_held ?? null, strategy: result.strategy ?? null, amountSol: result.amount_sol ?? null, closeReason: result.close_reason ?? args.reason ?? null }).catch(() => {});
         // Note low-yield closes in pool memory so screener avoids redeploying
         if (args.reason && args.reason.toLowerCase().includes("yield")) {
           const poolAddr = result.pool || args.pool_address;
           if (poolAddr) addPoolNote({ pool_address: poolAddr, note: `Closed: low yield (fee/TVL below threshold) at ${new Date().toISOString().slice(0,10)}` }).catch?.(() => {});
         }
+        // --- FIX: Set cooldown after stop-loss hit — prevent immediate redeploy into same pool ---
+        const closeReason = result.close_reason ?? args.reason ?? "";
+        const isSLClose = typeof closeReason === "string" && (
+          closeReason.toLowerCase().includes("stop loss") ||
+          closeReason.toLowerCase().includes("stop_loss") ||
+          (result.pnl_pct != null && Number(result.pnl_pct) <= -10)
+        );
+        if (isSLClose) {
+          const poolAddr = result.pool || args.pool_address;
+          const slCooldownHours = config.management.slCooldownHours ?? 12;
+          if (poolAddr) {
+            const { recordPoolDeploy: _rp, ...pmImport } = await import("../pool-memory.js");
+            if (typeof pmImport.setSlCooldown === "function") {
+              pmImport.setSlCooldown(poolAddr, slCooldownHours).catch?.(() => {});
+            } else {
+              // Fallback: use addPoolNote to at least mark it
+              addPoolNote({ pool_address: poolAddr, note: `SL hit: cooldown ${slCooldownHours}h requested at ${new Date().toISOString().slice(0,16)}` }).catch?.(() => {});
+            }
+            log("executor", `SL cooldown ${slCooldownHours}h requested for pool ${poolAddr.slice(0,8)} after stop-loss close (PnL: ${result.pnl_pct}%)`);
+          }
+        }
+        // --- END FIX ---
         // Auto-swap base token back to SOL unless user said to hold
         if (!args.skip_swap && result.base_mint) {
           try {
             const balances = await getWalletBalances({});
             const token = balances.tokens?.find(t => t.mint === result.base_mint);
             if (token && token.usd >= 0.10) {
-              log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL`);
-              const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
-              // Tell the model the swap already happened so it doesn't call swap_token again
-              result.auto_swapped = true;
-              result.auto_swap_note = `Base token already auto-swapped back to SOL (${token.symbol || result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
-              if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
+              // --- FIX: Check price impact before swapping to avoid huge slippage on illiquid tokens ---
+              const MAX_PRICE_IMPACT_PCT = config.management.maxAutoSwapPriceImpactPct ?? 15;
+              let priceImpactPct = null;
+              try {
+                const decimals = token.decimals ?? 6;
+                const amountRaw = Math.floor(token.balance * Math.pow(10, decimals));
+                const SOL_MINT = "So11111111111111111111111111111111111111112";
+                const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${result.base_mint}&outputMint=${SOL_MINT}&amount=${amountRaw}&slippageBps=500`;
+                const quoteRes = await fetch(quoteUrl);
+                if (quoteRes.ok) {
+                  const quote = await quoteRes.json();
+                  priceImpactPct = parseFloat(quote?.priceImpactPct ?? 0) * 100;
+                  log("executor", `Price impact for auto-swap ${token.symbol || result.base_mint.slice(0, 8)}: ${priceImpactPct.toFixed(2)}%`);
+                }
+              } catch (piErr) {
+                log("executor_warn", `Price impact check failed (will proceed with swap): ${piErr.message}`);
+              }
+
+              if (priceImpactPct !== null && priceImpactPct > MAX_PRICE_IMPACT_PCT) {
+                // Impact too high — skip swap, hold token, alert the model
+                log("executor_warn", `Auto-swap SKIPPED for ${token.symbol || result.base_mint.slice(0, 8)} — price impact ${priceImpactPct.toFixed(1)}% > ${MAX_PRICE_IMPACT_PCT}% threshold. Holding token.`);
+                result.auto_swapped = false;
+                result.auto_swap_skipped = true;
+                result.auto_swap_note = `Auto-swap SKIPPED — price impact ${priceImpactPct.toFixed(1)}% exceeds ${MAX_PRICE_IMPACT_PCT}% max. Token ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) kept in wallet. Swap manually when liquidity improves, or call swap_token with a smaller amount.`;
+              } else {
+                log("executor", `Auto-swapping ${token.symbol || result.base_mint.slice(0, 8)} ($${token.usd.toFixed(2)}) back to SOL${priceImpactPct !== null ? ` (impact: ${priceImpactPct.toFixed(2)}%)` : ""}`);
+                const swapResult = await swapToken({ input_mint: result.base_mint, output_mint: "SOL", amount: token.balance });
+                // Tell the model the swap already happened so it doesn't call swap_token again
+                result.auto_swapped = true;
+                result.auto_swap_note = `Base token already auto-swapped back to SOL (${token.symbol || result.base_mint.slice(0, 8)} → SOL). Do NOT call swap_token again.`;
+                if (swapResult?.amount_out) result.sol_received = swapResult.amount_out;
+              }
+              // --- END FIX ---
             }
           } catch (e) {
             log("executor_warn", `Auto-swap after close failed: ${e.message}`);

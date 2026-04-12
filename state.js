@@ -494,7 +494,11 @@ export function setLastBriefingDate() {
  * Reconcile local state with actual on-chain positions.
  * Marks any local open positions as closed if they are not in the on-chain list.
  */
-const SYNC_GRACE_MS = 5 * 60_000; // don't auto-close positions deployed < 5 min ago
+const SYNC_GRACE_MS = 15 * 60_000; // --- FIX: extended 5m→15m to handle relay indexing lag ---
+
+// --- FIX: require N consecutive misses before auto-closing to avoid relay flaps ---
+const SYNC_MISS_BEFORE_CLOSE = 3; // position must be missing from 3 consecutive polls
+// --- END FIX ---
 
 export function syncOpenPositions(active_addresses) {
   const state = load();
@@ -503,7 +507,14 @@ export function syncOpenPositions(active_addresses) {
 
   for (const posId in state.positions) {
     const pos = state.positions[posId];
-    if (pos.closed || activeSet.has(posId)) continue;
+    if (pos.closed || activeSet.has(posId)) {
+      // Reset miss counter when position is seen on-chain
+      if (!pos.closed && pos._sync_miss_count) {
+        pos._sync_miss_count = 0;
+        changed = true;
+      }
+      continue;
+    }
 
     // Grace period: newly deployed positions may not be indexed yet
     const deployedAt = pos.deployed_at ? new Date(pos.deployed_at).getTime() : 0;
@@ -512,11 +523,22 @@ export function syncOpenPositions(active_addresses) {
       continue;
     }
 
+    // --- FIX: require consecutive misses before auto-closing ---
+    pos._sync_miss_count = (pos._sync_miss_count || 0) + 1;
+    changed = true;
+
+    if (pos._sync_miss_count < SYNC_MISS_BEFORE_CLOSE) {
+      log("state", `Position ${posId} not found on-chain (miss ${pos._sync_miss_count}/${SYNC_MISS_BEFORE_CLOSE}) — waiting for confirmation before auto-close`);
+      continue;
+    }
+    // --- END FIX ---
+
     pos.closed = true;
     pos.closed_at = new Date().toISOString();
-    pos.notes.push(`Auto-closed during state sync (not found on-chain)`);
+    pos._sync_miss_count = undefined;
+    pos.notes.push(`Auto-closed during state sync (not found on-chain after ${SYNC_MISS_BEFORE_CLOSE} consecutive polls)`);
     changed = true;
-    log("state", `Position ${posId} auto-closed (missing from on-chain data)`);
+    log("state", `Position ${posId} auto-closed (missing from ${SYNC_MISS_BEFORE_CLOSE} consecutive polls)`);
   }
 
   if (changed) save(state);

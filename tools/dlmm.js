@@ -1562,6 +1562,11 @@ export async function closePosition({ position_address, reason }) {
         txs: txHashes,
         pnl_usd: pnlUsd,
         pnl_pct: pnlPct,
+        fees_earned_usd: feesUsd,
+        minutes_held: minutesHeld,
+        strategy: tracked.strategy || null,
+        amount_sol: tracked.amount_sol || null,
+        close_reason: reason || null,
         base_mint: pool.lbPair.tokenXMint.toString(),
       };
     }

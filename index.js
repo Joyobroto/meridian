@@ -290,17 +290,47 @@ export async function runManagementCycle({ silent = false } = {}) {
     const totalUnclaimed = positionData.reduce((s, p) => s + (p.unclaimed_fees_usd ?? 0), 0);
 
     const reportLines = positionData.map((p) => {
-      const act = actionMap.get(p.position);
-      const inRange = p.in_range ? "🟢 IN" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
-      const val = config.management.solMode ? `◎${p.total_value_usd ?? "?"}` : `$${p.total_value_usd ?? "?"}`;
-      const unclaimed = config.management.solMode ? `◎${p.unclaimed_fees_usd ?? "?"}` : `$${p.unclaimed_fees_usd ?? "?"}`;
-      const statusLabel = act.action === "INSTRUCTION" ? "HOLD (instruction)" : act.action;
-      let line = `**${p.pair}** | Age: ${p.age_minutes ?? "?"}m | Val: ${val} | Unclaimed: ${unclaimed} | PnL: ${p.pnl_pct ?? "?"}% | Yield: ${p.fee_per_tvl_24h ?? "?"}% | ${inRange} | ${statusLabel}`;
-      if (p.instruction) line += `\nNote: "${p.instruction}"`;
-      if (act.action === "CLOSE" && act.rule === "exit") line += `\n⚡ Trailing TP: ${act.reason}`;
-      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `\nRule ${act.rule}: ${act.reason}`;
-      if (act.indicatorHold) line += `\nIndicator hold: ${act.indicatorHold}`;
-      if (act.action === "CLAIM") line += `\n→ Claiming fees`;
+      const act       = actionMap.get(p.position);
+      const cur       = config.management.solMode ? "◎" : "$";
+      const inRange   = p.in_range ? "🟢 In range" : `🔴 OOR ${p.minutes_out_of_range ?? 0}m`;
+      const pnlSign   = (p.pnl_pct ?? 0) >= 0 ? "+" : "";
+      const pnlEmoji  = (p.pnl_pct ?? 0) >= 0 ? "📈" : "📉";
+
+      // Age: "2h 46m" or "14m"
+      const ageMin  = p.age_minutes ?? 0;
+      const ageStr  = ageMin >= 60 ? `${Math.floor(ageMin/60)}h ${ageMin%60}m` : `${ageMin}m`;
+
+      // Action badge
+      const actionBadge = {
+        STAY:        "✅ STAY",
+        CLOSE:       "🔒 CLOSE",
+        CLAIM:       "💰 CLAIM",
+        INSTRUCTION: "📋 HOLD",
+      }[act.action] ?? act.action;
+
+      let line =
+        `<b>${p.pair}</b>  ${inRange}
+` +
+        `${pnlEmoji} <b>PnL: ${pnlSign}${p.pnl_pct ?? "?"}%</b>
+` +
+        `💰 Fees: ${cur}${p.unclaimed_fees_usd ?? "?"}
+` +
+        `📊 Yield: ${p.fee_per_tvl_24h ?? "?"}%
+` +
+        `💼 Val: ${cur}${p.total_value_usd ?? "?"}
+` +
+        `⏱ Age: ${ageStr}
+` +
+        `${actionBadge}`;
+
+      if (p.instruction)                                     line += `
+📌 Note: "${p.instruction}"`;
+      if (act.action === "CLOSE" && act.rule === "exit")     line += `
+⚡ Trailing TP: ${act.reason}`;
+      if (act.action === "CLOSE" && act.rule && act.rule !== "exit") line += `
+📋 Rule ${act.rule}: ${act.reason}`;
+      if (act.indicatorHold)                                 line += `
+🔒 Indicator hold: ${act.indicatorHold}`;
       return line;
     });
 
@@ -311,7 +341,7 @@ export async function runManagementCycle({ silent = false } = {}) {
 
     const cur = config.management.solMode ? "◎" : "$";
     mgmtReport = reportLines.join("\n\n") +
-      `\n\nSummary: 💼 ${positions.length} positions | ${cur}${totalValue.toFixed(4)} | fees: ${cur}${totalUnclaimed.toFixed(4)} | ${actionSummary}`;
+      `\n\n<b>Summary</b>  💼 ${positions.length} pos,  💵 ${cur}${totalValue.toFixed(2)},  💰 ${cur}${totalUnclaimed.toFixed(2)} fees`;
 
     // ── Call LLM only if action needed ──────────────────────────────
     const actionPositions = positionData.filter(p => {
@@ -373,7 +403,7 @@ After executing, write a brief one-line result per position.
     if (!silent && telegramEnabled()) {
       if (mgmtReport) {
         if (liveMessage) await liveMessage.finalize(stripThink(mgmtReport)).catch(() => {});
-        else sendMessage(`🔄 Management Cycle\n\n${stripThink(mgmtReport)}`).catch(() => { });
+        else sendHTML(`🔄 <b>Management Cycle</b>\n\n${stripThink(mgmtReport)}`).catch(() => { });
       }
       for (const p of positions) {
         if (!p.in_range && p.minutes_out_of_range >= config.management.outOfRangeWaitMinutes) {

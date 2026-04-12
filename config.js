@@ -71,6 +71,9 @@ export const config = {
     oorCooldownHours:       u.oorCooldownHours       ?? 12,
     minVolumeToRebalance:  u.minVolumeToRebalance  ?? 1000,
     stopLossPct:           u.stopLossPct           ?? u.emergencyPriceDropPct ?? -50,
+    slCooldownHours:       u.slCooldownHours       ?? 12,   // hours to block pool/mint re-deploy after SL hit
+    slAutoBlacklistAfter:  u.slAutoBlacklistAfter  ?? 2,    // auto-blacklist base mint after N SL hits on same pool
+    maxAutoSwapPriceImpactPct: u.maxAutoSwapPriceImpactPct ?? 15, // skip auto-swap if price impact > this %
     takeProfitPct:         u.takeProfitPct         ?? u.takeProfitFeePct ?? 5,
     minFeePerTvl24h:       u.minFeePerTvl24h       ?? 7,
     minAgeBeforeYieldCheck: u.minAgeBeforeYieldCheck ?? 60, // minutes before low yield can trigger close

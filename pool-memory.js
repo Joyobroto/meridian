@@ -8,6 +8,7 @@
 import fs from "fs";
 import { log } from "./logger.js";
 import { config } from "./config.js";
+import { addToBlacklist } from "./token-blacklist.js"; // FIX: static import to avoid await in sync fn
 
 const POOL_MEMORY_FILE = "./pool-memory.json";
 const MAX_NOTE_LENGTH = 280;
@@ -40,6 +41,15 @@ function isOorCloseReason(reason) {
   const text = String(reason || "").trim().toLowerCase();
   return text === "oor" || text.includes("out of range") || text.includes("oor");
 }
+
+// --- FIX: detect stop-loss close reasons ---
+function isSLCloseReason(reason, pnl_pct) {
+  const text = String(reason || "").trim().toLowerCase();
+  const isByReason = text.includes("stop loss") || text.includes("stop_loss") || text.includes("sl hit");
+  const isByPnL = typeof pnl_pct === "number" && pnl_pct <= -10;
+  return isByReason || isByPnL;
+}
+// --- END FIX ---
 
 function isAdjustedWinRateExcludedReason(reason) {
   const text = String(reason || "").trim().toLowerCase();
@@ -172,6 +182,37 @@ export function recordPoolDeploy(poolAddress, deployData) {
     }
   }
 
+  // --- FIX: Set cooldown immediately when a stop-loss is hit ---
+  const slCooldownHours = config.management.slCooldownHours ?? 12;
+  const slAutoBlacklistAfter = config.management.slAutoBlacklistAfter ?? 2; // blacklist mint after N SL hits
+  if (isSLCloseReason(deploy.close_reason, deploy.pnl_pct)) {
+    const reason = `stop loss hit (PnL ${deploy.pnl_pct}%)`;
+    const poolCooldownUntil = setPoolCooldown(entry, slCooldownHours, reason);
+    const mintCooldownUntil = setBaseMintCooldown(db, entry.base_mint, slCooldownHours, reason);
+    log("pool-memory", `SL cooldown set for ${entry.name} until ${poolCooldownUntil} — ${reason}`);
+    if (entry.base_mint && mintCooldownUntil) {
+      log("pool-memory", `SL base mint cooldown set for ${entry.base_mint.slice(0, 8)} until ${mintCooldownUntil}`);
+    }
+
+    // Auto-blacklist base mint after repeated SL hits on same token
+    const slHits = entry.deploys.filter(d => isSLCloseReason(d.close_reason, d.pnl_pct)).length;
+    if (entry.base_mint && slHits >= slAutoBlacklistAfter) {
+      try {
+        const blResult = addToBlacklist({
+          mint: entry.base_mint,
+          symbol: entry.name.replace(/-SOL$/i, ""),
+          reason: `Auto-blacklisted: ${slHits}x SL hits on ${entry.name} (avg PnL ${entry.avg_pnl_pct}%)`,
+        });
+        if (!blResult.already_blacklisted) {
+          log("pool-memory", `🚫 Auto-blacklisted ${entry.name} base mint after ${slHits} SL hits`);
+        }
+      } catch (e) {
+        log("pool-memory", `Auto-blacklist failed: ${e.message}`);
+      }
+    }
+  }
+  // --- END FIX ---
+
   save(db);
   log("pool-memory", `Recorded deploy for ${entry.name} (${poolAddress.slice(0, 8)}): PnL ${deploy.pnl_pct}%`);
 }
@@ -194,6 +235,20 @@ export function isBaseMintOnCooldown(baseMint) {
     new Date(entry.base_mint_cooldown_until) > now
   );
 }
+
+// --- FIX: Exported so executor.js can call it directly after SL close ---
+export function setSlCooldown(poolAddress, hours = 12) {
+  if (!poolAddress) return;
+  const db = load();
+  if (!db[poolAddress]) return;
+  const reason = `stop loss hit (SL cooldown ${hours}h)`;
+  const until = setPoolCooldown(db[poolAddress], hours, reason);
+  const baseMint = db[poolAddress].base_mint;
+  if (baseMint) setBaseMintCooldown(db, baseMint, hours, reason);
+  save(db);
+  log("pool-memory", `SL cooldown set for ${db[poolAddress].name} until ${until}`);
+}
+// --- END FIX ---
 
 // ─── Read ──────────────────────────────────────────────────────
 
